@@ -27,6 +27,9 @@ class CircuitOpenError extends Error {
 }
 
 function createCircuitBreaker(options = {}) {
+  const failureThreshold = options.failureThreshold ?? 0.5;
+  const minimumRequests = options.minimumRequests ?? 5;
+  const openMillis = options.openMillis ?? 30_000;
   const now = options.now ?? Date.now;
   const onStateChange = options.onStateChange ?? function () {};
 
@@ -38,12 +41,60 @@ function createCircuitBreaker(options = {}) {
   };
 
   let state = 'CLOSED';
+  let calls = 0;
+  let failures = 0;
+  let openedAt = 0;
+  let probeInFlight = false;
+
+  function transition(nextState) {
+    if (state === nextState) return;
+    state = nextState;
+    if (nextState === 'OPEN') {
+      metrics.breaker_open_total += 1;
+      openedAt = now();
+      probeInFlight = false;
+    }
+    onStateChange(nextState);
+  }
 
   async function exec(fn) {
-    // TODO: Replace this pass-through with real circuit-breaker logic so that
-    // the supplied tests pass. Right now every call goes straight through and
-    // the breaker never opens.
-    return fn();
+    if (state === 'OPEN') {
+      if (now() - openedAt < openMillis) {
+        metrics.short_circuited_total += 1;
+        throw new CircuitOpenError();
+      }
+      if (probeInFlight) {
+        metrics.short_circuited_total += 1;
+        throw new CircuitOpenError();
+      }
+      probeInFlight = true;
+      transition('HALF_OPEN');
+    }
+
+    if (state === 'CLOSED') calls += 1;
+    try {
+      const result = await fn();
+      metrics.success_total += 1;
+      if (state === 'HALF_OPEN') {
+        probeInFlight = false;
+        calls = 0;
+        failures = 0;
+        transition('CLOSED');
+      }
+      return result;
+    } catch (error) {
+      metrics.failure_total += 1;
+      if (state === 'HALF_OPEN') {
+        probeInFlight = false;
+        transition('OPEN');
+      } else {
+        failures += 1;
+        if (calls >= minimumRequests && failures / calls >= failureThreshold) {
+          transition('OPEN');
+        }
+      }
+      throw error;
+    }
   }
 
   return {
