@@ -55,3 +55,35 @@ labelled sections:
 8. **How this production control protects my Modules 1–3 design**
 
 Submit the pull-request URL.
+
+## Risk addressed
+
+Prevents repeated provider failures from piling up and spreading latency or errors through PromptPilot.
+
+## Chosen control
+
+A circuit breaker in `src/circuitBreaker.js` opens after the configured failure ratio, probes after a cooldown, and closes on recovery.
+
+## How to run / test
+
+Run `node --test`; the expected result is all supplied circuit-breaker tests passing.
+
+## Evidence
+
+`test/circuitBreaker.test.js` proves threshold opening, dependency-free short-circuiting, recovery probes, and failed-probe reopening.
+
+## Observability note
+
+`metrics.breaker_open_total` and `metrics.short_circuited_total` count protective actions; `onStateChange(state)` reports `OPEN`, `HALF_OPEN`, and `CLOSED` transitions.
+
+## Trade-off
+
+During the cooldown, requests receive the safe fallback instead of attempting the provider, which may delay a recoverable draft.
+
+## Remaining risk
+
+The breaker is process-local, so multiple service instances do not share failure state or a common recovery budget.
+
+## How this production control protects my Modules 1–3 design
+
+It protects PromptPilot's support-reply path by keeping the user-facing workflow available when its external model dependency is unhealthy.
